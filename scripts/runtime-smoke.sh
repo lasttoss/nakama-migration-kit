@@ -44,10 +44,26 @@ if ! migrate_out=$(docker run --rm --network "$NET" "$NAKAMA_IMAGE" migrate up -
 fi
 docker run -d --name "$NK" --network "$NET" -p "$PORT":7350 -v "$PWD/modules":/nakama/data/modules "$NAKAMA_IMAGE" \
   --name smoke --database.address postgres:localdb@"$PG":5432/nakama --session.token_expiry_sec 3600 >/dev/null
-for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break; sleep 0.5; done
-
 H="http://127.0.0.1:$PORT"; K="$HTTP_KEY"
-docker logs "$NK" 2>&1 | grep -q "Registered Go runtime RPC function invocation" || fail "the module did not load"
+
+# A generous bound, because a cold CI runner pulls the image, unpacks it and starts Nakama on a
+# shared CPU: a 30-second deadline passes here and fails there, which is a job that is red for a
+# reason nobody can reproduce. On a timeout the server's log is printed, because a script that fails
+# without saying why costs the next person the same afternoon it cost this one.
+ready=0
+for _ in $(seq 1 240); do
+  if curl -sf "$H/" >/dev/null 2>&1; then ready=1; break; fi
+  sleep 0.5
+done
+if [ "$ready" != 1 ]; then
+  docker logs "$NK" 2>&1 | tail -20 >&2
+  fail "Nakama did not answer on port $PORT after two minutes"
+fi
+
+if ! docker logs "$NK" 2>&1 | grep -q "Registered Go runtime RPC function invocation"; then
+  docker logs "$NK" 2>&1 | tail -20 >&2
+  fail "the module did not load: the plugin was not registered"
+fi
 
 # The account is created by the same derived custom id the kit uses, twice: the second call has to
 # return the same account, or the kit would create a duplicate on every run.
