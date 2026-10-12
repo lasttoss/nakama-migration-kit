@@ -49,3 +49,28 @@ jobs:
           go-version: "1.27"
       - run: gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$'
       - run: go vet ./...
+
+  # The kit's own image, run rather than inspected: it is distroless, it refuses to start without a
+  # database, and the fake title's binary is in it.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/image.sh
+
+  # Lint, every branch rendered, and the manifests validated. A chart whose only tested path is the
+  # default one has an untested path for every value a user sets.
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: ./scripts/chart-check.sh
+
+  # The whole thing, from nothing, the way the README describes it: a legacy title, a Nakama, an
+  # import, a second import that writes nothing, and a reconciliation that agrees.
+  demo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: PLAYERS=500 ./scripts/demo.sh

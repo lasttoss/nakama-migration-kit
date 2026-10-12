@@ -1,0 +1,71 @@
+# A job chart, not a server chart: this kit is two commands that run against somebody else's Nakama.
+# Nothing here is long-running except the reconciler, which is meant to be a CronJob.
+image:
+  repository: ghcr.io/lasttoss/nakama-migration-kit
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# The importer needs a target and a source.
+nakama:
+  url: http://nakama:7350
+  # runtime.http_key, for the RPCs the module registers.
+  httpKey: defaulthttpkey
+  # socket.server_key, for the client API.
+  serverKey: defaultkey
+
+playfab:
+  # Where the legacy title is. The lab points this at a fake title; a real cutover points it at
+  # https://<titleid>.playfabapi.com.
+  baseURL: ""
+  titleID: ""
+  # The admin secret is read from a Secret, never from values: a value is a value in git.
+  secretKeySecret:
+    name: ""
+    key: secret-key
+  fakeTenant:
+    enabled: false
+    players: 1000
+    seed: 7
+
+# The kit's own ledger and checkpoints. A Secret, for the same reason.
+dsn:
+  existingSecret: ""
+  key: dsn
+
+profile:
+  # The mapping decisions for one title. Either inline - it is not a secret - or a ConfigMap that
+  # already exists.
+  inline: {}
+  existingConfigMap: ""
+
+import:
+  dryRun: false
+  limit: 0
+  batch: 500
+  concurrency: 4
+  backoffLimit: 1
+  # Kept for a day so a failed import can be read before it is cleaned up.
+  ttlSecondsAfterFinished: 86400
+
+reconcile:
+  enabled: false
+  schedule: "0 3 * * *"
+  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 3
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 512Mi
+nodeSelector: {}
+tolerations: []
+affinity: {}

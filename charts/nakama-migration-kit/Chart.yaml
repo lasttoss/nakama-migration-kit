@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nakama-migration-kit
+description: Imports a legacy title's players into Nakama, and checks that they arrived
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

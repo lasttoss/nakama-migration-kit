@@ -1,0 +1,12 @@
+{{- if and .Values.profile.inline (not .Values.profile.existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mkit.profileConfigMap" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "mkit.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  profile.json: |
+    {{- toJson .Values.profile.inline | nindent 4 }}
+{{- end }}

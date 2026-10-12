@@ -1,0 +1,70 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "mkit.fullname" . }}-import
+  labels:
+    app.kubernetes.io/name: {{ include "mkit.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: import
+  annotations:
+    # Re-running the import is the point of this kit being idempotent, so the job is annotated with
+    # the settings that change what it does: two runs with the same annotation and a different result
+    # is a bug, and this is how you see that without reading the logs twice.
+    migration.kit/dry-run: {{ .Values.import.dryRun | quote }}
+    migration.kit/limit: {{ .Values.import.limit | quote }}
+spec:
+  backoffLimit: {{ .Values.import.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.import.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "mkit.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: import
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "mkit.podSpec" . | nindent 6 }}
+      containers:
+        - name: importer
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - -dry-run={{ .Values.import.dryRun }}
+            - -limit={{ .Values.import.limit }}
+            - -batch={{ .Values.import.batch }}
+            - -concurrency={{ .Values.import.concurrency }}
+          env:
+            {{- include "mkit.env" . | nindent 12 }}
+          volumeMounts:
+            - name: profile
+              mountPath: /etc/migration
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: profile
+          configMap:
+            name: {{ include "mkit.profileConfigMap" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

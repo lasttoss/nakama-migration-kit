@@ -1,0 +1,20 @@
+# What the chart-check renders against: a lab where nothing real is touched.
+dsn:
+  existingSecret: migration-lab-dsn
+playfab:
+  secretKeySecret:
+    name: migration-lab-playfab
+    key: secret-key
+  baseURL: http://faketenant:8080
+  titleID: LAB
+profile:
+  inline:
+    name: faketenant
+    source: playfab
+    collection: migration
+    currency: {GD: gold}
+    user_data: {level: level, energy: energy}
+    statistics: {wins: wins}
+    unmapped: note
+import:
+  limit: 1000

@@ -1,0 +1,12 @@
+The importer runs as a Job, and it is safe to run again: a second run writes only what changed.
+
+  kubectl logs job/{{ include "mkit.fullname" . }}-import
+
+To import a title's players you need two Secrets, because this chart does not take them as values:
+  profile: {{ include "mkit.profileConfigMap" . }} (or set profile.existingConfigMap)
+  database: {{ .Values.dsn.existingSecret | default "<not set: dsn.existingSecret is required>" }}
+{{- if .Values.reconcile.enabled }}
+
+The reconciler runs on {{ .Values.reconcile.schedule | quote }} and fails the job if anything is
+missing or changed. That is the gate on a cutover, so a failed job is a page, not a report.
+{{- end }}

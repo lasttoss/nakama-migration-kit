@@ -1,0 +1,49 @@
+{{- if .Values.reconcile.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "mkit.fullname" . }}-reconcile
+  labels:
+    app.kubernetes.io/name: {{ include "mkit.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: reconcile
+spec:
+  schedule: {{ .Values.reconcile.schedule | quote }}
+  failedJobsHistoryLimit: {{ .Values.reconcile.failedJobsHistoryLimit }}
+  successfulJobsHistoryLimit: {{ .Values.reconcile.successfulJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: {{ include "mkit.name" . }}
+            app.kubernetes.io/instance: {{ .Release.Name }}
+            app.kubernetes.io/component: reconcile
+        spec:
+          {{- include "mkit.podSpec" . | nindent 10 }}
+          containers:
+            # The command exits non-zero when anything is missing or changed, which is what makes this
+            # a monitoring job rather than a report: a mismatch shows up as a failed job.
+            - name: reconcile
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: ["/reconcile"]
+              env:
+                {{- include "mkit.env" . | nindent 16 }}
+              volumeMounts:
+                - name: profile
+                  mountPath: /etc/migration
+                  readOnly: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                {{- toYaml .Values.resources | nindent 16 }}
+          volumes:
+            - name: profile
+              configMap:
+                name: {{ include "mkit.profileConfigMap" . }}
+{{- end }}
