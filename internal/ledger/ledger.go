@@ -12,17 +12,32 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/lasttoss/nakama-migration-kit/internal/mapping"
 )
 
 // Ledger writes and reads the importer's tables.
+// DB is what the ledger needs from a database handle.
+//
+// It is an interface rather than *pgx.Conn for one reason that a demo found: imports run players
+// concurrently, and a *pgx.Conn is not safe for concurrent use - four workers sharing one connection
+// fail with "conn busy", which reads like a corrupt database and is really four goroutines taking
+// turns on something that does not have turns. *pgx.Conn and *pgxpool.Pool both satisfy this, so a
+// test can keep passing a single connection and a run can pass a pool.
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
+}
+
 type Ledger struct {
-	conn *pgx.Conn
+	db DB
 }
 
 // Open returns a ledger over an existing connection.
-func Open(conn *pgx.Conn) *Ledger { return &Ledger{conn: conn} }
+func Open(db DB) *Ledger { return &Ledger{db: db} }
 
 // Identity is what the kit knows about a player's account.
 type Identity struct {
@@ -38,7 +53,7 @@ type Identity struct {
 // the insert fails rather than attaching two players to one account. A run that hits this has a
 // bug in its identity derivation, and stopping is the correct behaviour.
 func (l *Ledger) SeenIdentity(ctx context.Context, id Identity) error {
-	_, err := l.conn.Exec(ctx, `
+	_, err := l.db.Exec(ctx, `
 		insert into identity_map (source, source_id, custom_id, nakama_user_id)
 		values ($1, $2, $3, $4)
 		on conflict (source, source_id) do update
@@ -55,7 +70,7 @@ func (l *Ledger) SeenIdentity(ctx context.Context, id Identity) error {
 // Identity returns the account for a player, if the kit has seen it.
 func (l *Ledger) Identity(ctx context.Context, source, sourceID string) (Identity, bool, error) {
 	var id Identity
-	err := l.conn.QueryRow(ctx, `
+	err := l.db.QueryRow(ctx, `
 		select source, source_id, custom_id, nakama_user_id
 		  from identity_map where source = $1 and source_id = $2`, source, sourceID).
 		Scan(&id.Source, &id.SourceID, &id.CustomID, &id.NakamaUserID)
@@ -70,7 +85,7 @@ func (l *Ledger) Identity(ctx context.Context, source, sourceID string) (Identit
 
 // Latest returns the newest checksum the kit recorded for each document of a player.
 func (l *Ledger) Latest(ctx context.Context, source, sourceID string) (map[string]string, error) {
-	rows, err := l.conn.Query(ctx, `
+	rows, err := l.db.Query(ctx, `
 		select entity, checksum from import_ledger_latest
 		 where source = $1 and source_id = $2`, source, sourceID)
 	if err != nil {
@@ -103,7 +118,7 @@ func (l *Ledger) Append(ctx context.Context, runID int64, source, sourceID strin
 			on conflict (source, entity, source_id, checksum) do nothing`,
 			source, e.Name, sourceID, e.Checksum, runID)
 	}
-	results := l.conn.SendBatch(ctx, batch)
+	results := l.db.SendBatch(ctx, batch)
 	defer results.Close()
 	for range entities {
 		if _, err := results.Exec(); err != nil {
@@ -125,7 +140,7 @@ type Counts struct {
 // Run starts a run and returns its id.
 func (l *Ledger) Run(ctx context.Context, source, strategy, mode string) (int64, error) {
 	var id int64
-	err := l.conn.QueryRow(ctx, `
+	err := l.db.QueryRow(ctx, `
 		insert into import_run (source, strategy, mode) values ($1, $2, $3) returning id`,
 		source, strategy, mode).Scan(&id)
 	if err != nil {
@@ -136,7 +151,7 @@ func (l *Ledger) Run(ctx context.Context, source, strategy, mode string) (int64,
 
 // FinishRun closes a run with its counters.
 func (l *Ledger) FinishRun(ctx context.Context, runID int64, seen, missing, written, identical, errors int64) error {
-	_, err := l.conn.Exec(ctx, `
+	_, err := l.db.Exec(ctx, `
 		update import_run
 		   set finished_at = now(), players_seen = $2, players_missing = $3,
 		       documents_written = $4, documents_identical = $5, errors = $6
@@ -149,7 +164,7 @@ func (l *Ledger) FinishRun(ctx context.Context, runID int64, seen, missing, writ
 
 // RecordMismatch stores a difference reconciliation found, so it survives the terminal.
 func (l *Ledger) RecordMismatch(ctx context.Context, runID int64, sourceID, entity, detail string) error {
-	_, err := l.conn.Exec(ctx, `
+	_, err := l.db.Exec(ctx, `
 		insert into import_mismatch (run_id, source_id, entity, detail)
 		values ($1, $2, $3, $4)
 		on conflict (run_id, source_id, entity) do update set detail = excluded.detail`,
@@ -169,7 +184,7 @@ type Mismatch struct {
 
 // Mismatches lists what reconciliation found for a run, ordered so a report is stable.
 func (l *Ledger) Mismatches(ctx context.Context, runID int64) ([]Mismatch, error) {
-	rows, err := l.conn.Query(ctx, `
+	rows, err := l.db.Query(ctx, `
 		select source_id, entity, detail from import_mismatch
 		 where run_id = $1 order by source_id, entity`, runID)
 	if err != nil {
@@ -191,7 +206,7 @@ func (l *Ledger) Mismatches(ctx context.Context, runID int64) ([]Mismatch, error
 // CountsOf returns how many documents a run recorded.
 func (l *Ledger) CountsOf(ctx context.Context, runID int64) (int64, error) {
 	var n int64
-	err := l.conn.QueryRow(ctx, `select count(*) from import_ledger where run_id = $1`, runID).Scan(&n)
+	err := l.db.QueryRow(ctx, `select count(*) from import_ledger where run_id = $1`, runID).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("ledger: count run %d: %w", runID, err)
 	}
@@ -201,7 +216,7 @@ func (l *Ledger) CountsOf(ctx context.Context, runID int64) (int64, error) {
 // IdentityCount is how many accounts the kit has mapped.
 func (l *Ledger) IdentityCount(ctx context.Context, source string) (int64, error) {
 	var n int64
-	err := l.conn.QueryRow(ctx, `select count(*) from identity_map where source = $1`, source).Scan(&n)
+	err := l.db.QueryRow(ctx, `select count(*) from identity_map where source = $1`, source).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("ledger: count identities: %w", err)
 	}

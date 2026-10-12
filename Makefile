@@ -45,3 +45,18 @@ runtime: ## build the Nakama plugin with the toolchain that built the server
 
 smoke: ## the runtime module against a real Nakama: idempotent, resumable, dry-run
 	./scripts/runtime-smoke.sh
+
+demo: ## the whole migration from nothing: 10k players, then a second run that writes nothing
+	./scripts/demo.sh
+
+demo-crash: ## a run killed mid-batch, and the run that finishes it
+	./scripts/demo-crash.sh
+
+image: ## build the image and check it runs as nonroot without a shell
+	./scripts/image.sh
+
+up: ## start the lab (database, fake title, Nakama) without running the import
+	docker compose up -d --wait postgres faketenant nakama
+
+down: ## stop the lab and remove its volumes
+	docker compose down -v --remove-orphans

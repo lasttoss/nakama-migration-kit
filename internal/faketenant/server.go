@@ -80,7 +80,14 @@ func New(opts Options) *Server {
 		opts.Tenant = NewTenant(opts.Players, opts.Seed)
 	}
 	s := &Server{tenant: opts.Tenant, opts: opts}
+	s.Server = httptest.NewServer(s.routes())
+	return s
+}
 
+// routes is the fake title's API. It is a method as well as what New serves, because a lab wants the
+// title on an address it chose: cmd/faketenant serves these routes on a fixed port, where the
+// importer's container can reach them, instead of on httptest's loopback one.
+func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/Admin/GetPlayersInSegment", s.handlePlayersInSegment)
 	mux.HandleFunc("/Admin/GetPlayerProfile", s.handlePlayerProfile)
@@ -88,9 +95,11 @@ func New(opts Options) *Server {
 	mux.HandleFunc("/Admin/GetUserInventory", s.handleUserInventory)
 	mux.HandleFunc("/Admin/GetUserVirtualCurrency", s.handleUserVirtualCurrency)
 	mux.HandleFunc("/Admin/GetPlayerStatistics", s.handlePlayerStatistics)
-	s.Server = httptest.NewServer(mux)
-	return s
+	return mux
 }
+
+// Handler serves the fake title on a listener of the caller's choosing.
+func (s *Server) Handler() http.Handler { return s.routes() }
 
 // Tenant is the data being served, which a test uses as ground truth.
 func (s *Server) Tenant() *Tenant { return s.tenant }

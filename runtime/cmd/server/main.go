@@ -302,7 +302,10 @@ func recordedChecksums(ctx context.Context, nk runtime.NakamaModule, userID stri
 	out := map[string]string{}
 	// Nakama lists storage by collection and paging, not by key set: read the collection this module
 	// owns and keep the rows the caller asked about.
-	objects, _, err := nk.StorageList(ctx, "", userID, checksumCollection, 100, "")
+	// Paged, not capped. A player's checksums are one row per document, so a cap of one page means a
+	// run whose players have more than a page of documents between them re-writes most of them - and
+	// reports it as work done, not as a bug.
+	rows, err := listAll(ctx, nk, userID, checksumCollection)
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +313,7 @@ func recordedChecksums(ctx context.Context, nk runtime.NakamaModule, userID stri
 	for _, k := range keys {
 		wanted[k] = true
 	}
-	for _, o := range objects {
+	for _, o := range rows {
 		var row struct {
 			Checksum   string `json:"checksum"`
 			Collection string `json:"collection"`

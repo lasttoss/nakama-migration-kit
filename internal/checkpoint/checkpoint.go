@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Checkpoint is where a stream of work stopped.
@@ -23,16 +24,24 @@ type Checkpoint struct {
 }
 
 // Store reads and writes checkpoints.
-type Store struct{ conn *pgx.Conn }
+// DB is what a checkpoint needs. Two methods, because a checkpoint is two statements: read where the
+// run stopped, write where it stopped. *pgxpool.Pool and *pgx.Conn both satisfy it, and the pool is
+// what a concurrent run has to pass - see the same note in internal/ledger.
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+type Store struct{ db DB }
 
 // Open returns a store over an existing connection.
-func Open(conn *pgx.Conn) *Store { return &Store{conn: conn} }
+func Open(db DB) *Store { return &Store{db: db} }
 
 // Load returns the checkpoint for a stream. The second return is false when the stream has never
 // run, which is how a first run and a resumed run are told apart without a flag.
 func (s *Store) Load(ctx context.Context, source, stream string) (Checkpoint, bool, error) {
 	var c Checkpoint
-	err := s.conn.QueryRow(ctx, `
+	err := s.db.QueryRow(ctx, `
 		select source, stream, cursor, batch_no, players_done
 		  from import_checkpoint where source = $1 and stream = $2`, source, stream).
 		Scan(&c.Source, &c.Stream, &c.Cursor, &c.BatchNo, &c.PlayersDone)
@@ -47,7 +56,7 @@ func (s *Store) Load(ctx context.Context, source, stream string) (Checkpoint, bo
 
 // Save records where a stream has got to.
 func (s *Store) Save(ctx context.Context, c Checkpoint) error {
-	_, err := s.conn.Exec(ctx, `
+	_, err := s.db.Exec(ctx, `
 		insert into import_checkpoint (source, stream, cursor, batch_no, players_done)
 		values ($1, $2, $3, $4, $5)
 		on conflict (source, stream) do update
@@ -64,7 +73,7 @@ func (s *Store) Save(ctx context.Context, c Checkpoint) error {
 
 // Clear deletes a stream's checkpoint, for a run that has finished the listing.
 func (s *Store) Clear(ctx context.Context, source, stream string) error {
-	_, err := s.conn.Exec(ctx, `delete from import_checkpoint where source = $1 and stream = $2`, source, stream)
+	_, err := s.db.Exec(ctx, `delete from import_checkpoint where source = $1 and stream = $2`, source, stream)
 	if err != nil {
 		return fmt.Errorf("checkpoint: clear %s/%s: %w", source, stream, err)
 	}
