@@ -52,6 +52,10 @@ demo: ## the whole migration from nothing: 10k players, then a second run that w
 demo-crash: ## a run killed mid-batch, and the run that finishes it
 	./scripts/demo-crash.sh
 
+diagram: ## regenerate the figure and check it against its sources
+	@python3 docs/figures/nakama-migration-kit-flow.generator.py
+	@bash ~/.pi/agent/scripts/diagram-freshness.sh 2>/dev/null | grep -E "FRESH|STALE|TOUCHED|NO-META|UNCOMMITTED" | sed 's/^/  /'
+
 chart: ## lint the chart, render every branch, validate the manifests
 	./scripts/chart-check.sh
 

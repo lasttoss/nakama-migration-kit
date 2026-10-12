@@ -50,6 +50,12 @@ the run after it found that out by comparing checksums rather than by trusting i
 
 ## How it works
 
+**Figure 1** — where a player's data goes, and why a second run writes nothing. The write path and
+the record of it are the same storage write, which is what makes a run that dies between them still
+idempotent: the next run does not ask the importer what it did, it asks the target.
+
+![nakama-migration-kit: a legacy title is read through one of two Source implementations behind one interface, each player gets a UUIDv5 custom id and each document a checksum of its meaning; the importer maps the record and calls Nakama's runtime module, which writes the document and the checksum in one storage write; the kit's own PostgreSQL holds the append-only ledger and the checkpoint; reconcile reads the target back through migration.inspect and compares checksums, not bytes, exiting non-zero when anything is missing or changed](docs/figures/nakama-migration-kit-flow.png)
+
 | package | what it decides |
 |---|---|
 | `internal/identity` | a Nakama custom id derived from the legacy id, so a re-run cannot create a second account |
@@ -136,8 +142,8 @@ makes it a gate on a cutover rather than a report nobody reads.
 - The re-ship features from the plan: idempotent gift codes, reward mail, and scheduled events driven
   by `liveops-console`, and the after-hook that gives a new account its starting state. The runtime
   module has the write path they would use, not the features.
-- `make diagram`: `docs/figures/` is empty. The diagram standard wants a source under `docs/figures/`
-  with its `diagram-meta`, and a freshness gate.
+- A second figure for the runtime module's own state machine (plan, apply, inspect) - the one figure
+  here is about the flow between the pieces, not about the module alone.
 - The `sql` source (a relational legacy backend read directly, which is the path a SmartFoxServer
   title would take) - noted in `docs/design-notes.md`, not implemented.
 
