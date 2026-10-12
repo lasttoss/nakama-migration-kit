@@ -37,3 +37,11 @@ fmt: ## write gofmt changes
 	$(GO) fmt ./... >/dev/null
 
 check: lint test ## what CI runs
+
+# The runtime module is built by the plugin builder image, not by the Go toolchain here.
+runtime: ## build the Nakama plugin with the toolchain that built the server
+	docker run --rm -v "$$(PWD)/runtime":/app -w /app --entrypoint sh heroiclabs/nakama-pluginbuilder:3.41.0 \
+		-c "GOFLAGS=-mod=mod go build --trimpath --buildmode=plugin -o modules/backend.so ./cmd/server"
+
+smoke: ## the runtime module against a real Nakama: idempotent, resumable, dry-run
+	./scripts/runtime-smoke.sh

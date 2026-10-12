@@ -41,9 +41,36 @@ bounded by the source's rate limit, which this kit does not control, and no amou
 Goroutines changes that. The last two are why `Source` has a second implementation for an export
 instead of a faster loop for the API.
 
+## The runtime module
+
+`runtime/` is a separate Go module: a Nakama plugin that owns the writes. The importer decides what
+a player should look like; the module decides whether that is a change, and records the checksum it
+wrote beside the data it wrote it for. That is deliberate - idempotency enforced at the target is the
+only kind that survives a run dying between the write and its own bookkeeping, and it is the only
+place the claim can be checked from outside.
+
+Three RPCs, called server-to-server with Nakama's `http_key` (not with the server key: that returns
+`HTTP key invalid`):
+
+| RPC | what it does |
+|---|---|
+| `migration.plan` | what would change, and writes nothing |
+| `migration.apply` | writes the documents whose meaning changed, and says which |
+| `migration.status` | what the module has recorded, in its own storage rather than the importer's database |
+
+```
+make runtime   # build the plugin with the toolchain that built the server (see runtime/PROVENANCE.md)
+make smoke     # a real Nakama, from nothing: one account, a second run that writes nothing
+```
+
+Versions are pinned and not guesses: Nakama 3.41.0 is go1.27.1 with nakama-common v1.48.0, read out
+of the server binary. A Go plugin is linked into the host's runtime, so a mismatch does not fail at
+build time, it fails to load. `runtime/PROVENANCE.md` records how each number was read.
+
 ## What is not here yet
 
-- `cmd/importer` and `cmd/reconcile`: the CLI. Empty directories, not stubs.
+- `cmd/importer` and `cmd/reconcile`: the CLI. Empty directories, not stubs. The runtime module is
+  in place, so the importer now has a target to call.
 - `docker-compose.yml` and `charts/`: these need an entrypoint to run. A compose file for a binary
   that does not exist is a file that passes review and fails on first use, so they come after the
   CLI and the runtime plugin, against a lab that actually starts (`postgres` + the fake tenant +
