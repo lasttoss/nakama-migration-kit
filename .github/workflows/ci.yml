@@ -31,6 +31,15 @@ jobs:
       - run: go build ./...
       - run: go test -race -count=1 ./...
 
+  # The plugin is a deliverable and its failure mode is a version mismatch that does not show up at
+  # build time on this machine: it is built by the plugin builder image and loaded into a real
+  # Nakama, which is what this job does. A module that does not register its RPCs fails here.
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/runtime-smoke.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:
