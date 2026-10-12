@@ -52,6 +52,9 @@ demo: ## the whole migration from nothing: 10k players, then a second run that w
 demo-crash: ## a run killed mid-batch, and the run that finishes it
 	./scripts/demo-crash.sh
 
+chart: ## lint the chart, render every branch, validate the manifests
+	./scripts/chart-check.sh
+
 image: ## build the image and check it runs as nonroot without a shell
 	./scripts/image.sh
 

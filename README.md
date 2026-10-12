@@ -1,12 +1,54 @@
 # nakama-migration-kit
 
-Move a live title's players off a legacy backend and into Nakama, and be able to say with a number
-that the second run wrote nothing.
+Move a live title's players off a legacy backend and into self-hosted Nakama, and be able to say with
+a number that the second run wrote nothing.
 
-## What is here
+```
+make demo        # 10k players imported twice against a real Nakama, with a reconciliation in between
+make demo-crash  # a run killed mid-batch, and the run that finishes it
+```
 
-Twelve packages and no CLI. This is the data layer: everything that has to be right before a run is
-allowed to touch a live title.
+## What it does, measured
+
+`make demo` starts a fake legacy title, a PostgreSQL and a Nakama, imports the title, imports it
+again, and then reconciles the target against the source. The numbers below are from that run, not
+from a projection:
+
+| | |
+|---|---|
+| players in the title | 10,000 |
+| documents written, first run | 47,500 |
+| documents written, second run | **0** (47,500 skipped, because the meaning was already there) |
+| reconciliation | 10,000 players compared, 0 missing, 0 changed, 0 extra |
+| first run | 41.4 s at concurrency 4 |
+| second run | 27.8 s |
+
+The second run is not fast, and that is worth saying plainly: it still reads every player from the
+source, because the claim is "it wrote nothing", not "it did nothing". The wall clock is the source's,
+which is the whole argument of `internal/plan`: an Admin API import costs about five requests per
+player, so the way to make a million players take minutes is to read a title export instead -
+`-source=export` is the same importer with the same checksums and no API calls.
+
+`make demo-crash` runs the import, kills it once the first checkpoint is written, and runs it again:
+
+```
+=== importing, and killing the run part way through
+  crashed after 200 players and 983 recorded documents
+=== the next run finishes it
+  players seen        2000
+  players changed     1793
+  players identical   7
+  documents written   8517
+  documents skipped   33
+  batches             10 (resumed)
+  players imported across the crash  2000
+  checkpoints left behind            0
+```
+
+`identical 7` is the number to look at: seven players had every document written before the kill, and
+the run after it found that out by comparing checksums rather than by trusting its own bookkeeping.
+
+## How it works
 
 | package | what it decides |
 |---|---|
@@ -19,27 +61,21 @@ allowed to touch a live title.
 | `internal/playfab` | transport for the live API: paging, `Retry-After`, and the error taxonomy |
 | `internal/plan` | how long, as arithmetic rather than optimism |
 | `internal/profile` | one title's mapping decisions (`profiles/faketenant.json`), and the discovery pass that drafts them |
-| `internal/faketenant` | a fake legacy title to import from, deterministic and awkward on purpose |
+| `internal/target` | where the data goes: the runtime module, called over Nakama's RPC |
+| `internal/importer` | the loop: read, map, derive, write, record, checkpoint |
+| `internal/reconcile` | the comparison, over checksums rather than bytes |
+| `internal/faketenant` | a fake legacy title, deterministic and awkward on purpose |
 | `internal/migrate` | numbered SQL, applied in order, recorded in `schema_version` |
 | `internal/pgtest` | a schema per test package, because `go test ./...` runs packages in parallel |
 
-## The numbers that decide a migration plan
-
-Measured by `go test ./internal/plan -run TestTheNumbersTheReadmeQuotes -v`, which prints them rather
-than asserting them, because they are a budget and not a test result:
+The numbers that decide a migration plan, printed by
+`go test ./internal/plan -run TestTheNumbersTheReadmeQuotes -v`:
 
 | | wall clock at 20 req/s |
 |---|---|
 | 10,000 players over the Admin API | 50.0 min (60,000 calls) |
-| 100,000 players | 8.3 h |
 | 1,000,000 players | 3.5 days |
 | 1,000,000 players from a title export, batched writes | 1.0 min |
-| 1,000,000 players from an export, 8 writers | 16.0 s |
-
-The first three are the number a studio needs before agreeing to a cutover window: an API import is
-bounded by the source's rate limit, which this kit does not control, and no amount of reading
-Goroutines changes that. The last two are why `Source` has a second implementation for an export
-instead of a faster loop for the API.
 
 ## The runtime module
 
@@ -49,44 +85,61 @@ wrote beside the data it wrote it for. That is deliberate - idempotency enforced
 only kind that survives a run dying between the write and its own bookkeeping, and it is the only
 place the claim can be checked from outside.
 
-Three RPCs, called server-to-server with Nakama's `http_key` (not with the server key: that returns
-`HTTP key invalid`):
-
 | RPC | what it does |
 |---|---|
 | `migration.plan` | what would change, and writes nothing |
 | `migration.apply` | writes the documents whose meaning changed, and says which |
-| `migration.status` | what the module has recorded, in its own storage rather than the importer's database |
+| `migration.inspect` | reads back what the target holds, with the checksums it recorded |
+| `migration.status` | how many checksums the module has recorded |
+
+Called server-to-server with Nakama's `http_key` (the server key returns `HTTP key invalid`). Versions
+are pinned and read out of the server binary rather than guessed: Nakama 3.41.0 is go1.27.1 with
+`nakama-common v1.48.0`. A Go plugin is linked into the host's runtime, so a mismatch does not fail at
+build time, it fails to load - `runtime/PROVENANCE.md` records how each number was read.
 
 ```
-make runtime   # build the plugin with the toolchain that built the server (see runtime/PROVENANCE.md)
-make smoke     # a real Nakama, from nothing: one account, a second run that writes nothing
+make runtime   # build the plugin with the toolchain that built the server
+make smoke     # a real Nakama from nothing: idempotent, dry-run, and inspect
 ```
 
-Versions are pinned and not guesses: Nakama 3.41.0 is go1.27.1 with nakama-common v1.48.0, read out
-of the server binary. A Go plugin is linked into the host's runtime, so a mismatch does not fail at
-build time, it fails to load. `runtime/PROVENANCE.md` records how each number was read.
-
-## What is not here yet
-
-- `cmd/importer` and `cmd/reconcile`: the CLI. Empty directories, not stubs. The runtime module is
-  in place, so the importer now has a target to call.
-- `docker-compose.yml` and `charts/`: these need an entrypoint to run. A compose file for a binary
-  that does not exist is a file that passes review and fails on first use, so they come after the
-  CLI and the runtime plugin, against a lab that actually starts (`postgres` + the fake tenant +
-  Nakama + the plugin).
-
-## Running the tests
+## Running it
 
 ```
-make test      # 75 tests; 13 skip and name the variable that would have run them
-make test-db   # starts a throwaway PostgreSQL and runs everything: 88 tests, 0 skipped
-make lint      # gofmt and vet
+make demo         # the whole migration, twice, from nothing
+make demo-crash   # a run killed mid-batch, and the run that finishes it
+make up           # just the lab: PostgreSQL, a fake title, Nakama
+make down
+make test         # 92 tests; the database ones skip and name the variable that would run them
+make test-db      # 105 tests, against a real PostgreSQL
+make image        # build the image and check it runs as nonroot without a shell
+make chart        # lint the chart, render every branch, validate the manifests
+make lint         # gofmt and vet
 ```
 
-`MIGRATION_TEST_DSN` turns the database tests on. They are the interesting half - an import writing
-nothing the second time is a database property - so CI runs them against a service container rather
-than reporting a green suite with a quarter of it skipped.
+The two commands, on a machine with its own Nakama and PostgreSQL:
+
+```
+importer -source=playfab -playfab-title=ABC1 -profile=profiles/faketenant.json \
+         -target-url=http://127.0.0.1:7350 -dsn=postgres://.../mkit -dry-run
+
+reconcile -source=playfab -playfab-title=ABC1 -profile=profiles/faketenant.json \
+          -target-url=http://127.0.0.1:7350 -dsn=postgres://.../mkit
+```
+
+Every flag has an environment variable (`MIGRATION_DSN`, `MIGRATION_TARGET_URL`, ...), because a
+container runs a fixed command and `docker compose run <service> -limit=300` replaces that command
+rather than adding to it. `reconcile` exits non-zero when anything is missing or changed: that is what
+makes it a gate on a cutover rather than a report nobody reads.
+
+## Not here yet
+
+- The re-ship features from the plan: idempotent gift codes, reward mail, and scheduled events driven
+  by `liveops-console`, and the after-hook that gives a new account its starting state. The runtime
+  module has the write path they would use, not the features.
+- `make diagram`: `docs/figures/` is empty. The diagram standard wants a source under `docs/figures/`
+  with its `diagram-meta`, and a freshness gate.
+- The `sql` source (a relational legacy backend read directly, which is the path a SmartFoxServer
+  title would take) - noted in `docs/design-notes.md`, not implemented.
 
 ## Design notes
 
