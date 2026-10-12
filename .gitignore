@@ -1,0 +1,5 @@
+/bin/
+modules/*.so
+lab/evidence/
+report/
+state/quarantine.json

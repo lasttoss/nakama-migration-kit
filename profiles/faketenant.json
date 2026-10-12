@@ -1,0 +1,21 @@
+{
+  "name": "faketenant",
+  "source": "playfab",
+  "collection": "migration",
+  "currency": {
+    "GD": "gold",
+    "GM": "gems"
+  },
+  "user_data": {
+    "tutorial": "tutorial",
+    "city": "city",
+    "note": "note",
+    "energy": "energy",
+    "level": "level"
+  },
+  "statistics": {
+    "wins": "wins",
+    "losses": "losses"
+  },
+  "unmapped": "note"
+}

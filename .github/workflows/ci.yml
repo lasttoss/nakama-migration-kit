@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # The database tests are the interesting half of this kit: they are what proves an import writes
+    # nothing the second time. They skip when MIGRATION_TEST_DSN is unset, so a CI without a server
+    # would report green having run three quarters of the suite - the kind of green this repository
+    # exists to avoid.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: mkit
+          POSTGRES_DB: mkit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      MIGRATION_TEST_DSN: postgres://postgres:mkit@127.0.0.1:5432/mkit?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: go build ./...
+      - run: go test -race -count=1 ./...
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+      - run: gofmt -l . | tee /dev/stderr | wc -l | grep -q '^0$$'
+      - run: go vet ./...
