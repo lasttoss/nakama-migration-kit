@@ -15,15 +15,17 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/heroiclabs/nakama-common/api"
 	"github.com/heroiclabs/nakama-common/runtime"
 )
 
 // RPC names. They are a contract with internal/target in the main module, and with anyone running
 // this kit against their own console.
 const (
-	rpcPlan   = "migration.plan"
-	rpcApply  = "migration.apply"
-	rpcStatus = "migration.status"
+	rpcPlan    = "migration.plan"
+	rpcApply   = "migration.apply"
+	rpcStatus  = "migration.status"
+	rpcInspect = "migration.inspect"
 )
 
 // checksumCollection is where this module records what it wrote, per document. It is one collection
@@ -43,7 +45,7 @@ type Document struct {
 	Value string `json:"value"`
 	// Public is whether any client may read it. User data that a game shows in a menu is public;
 	// a migration ledger is not.
-	Public bool `json:"public,omitempty"`
+	Public bool `json:"public"`
 }
 
 // ApplyRequest is one player's worth of documents, plus how far along the run is.
@@ -75,6 +77,24 @@ type ApplyResponse struct {
 type statusResponse struct {
 	Checksums int `json:"checksums"`
 }
+
+// inspectRequest asks what the target holds for one player.
+type inspectRequest struct {
+	PlayerID    string   `json:"player_id"`
+	Collections []string `json:"collections"`
+}
+
+// inspectResponse is what is there, with the checksums this module recorded beside it. The checksum
+// is what a reconciliation compares: the value is what a person reads when one does not match.
+type inspectResponse struct {
+	PlayerID  string     `json:"player_id"`
+	Documents []Document `json:"documents"`
+}
+
+// storagePage is how many rows are read at a time. The list is paged rather than capped: a player
+// with an inventory larger than one page would otherwise reconcile as a mismatch, which is the
+// worst kind of wrong answer this kit can give.
+const storagePage = 100
 
 func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, initializer runtime.Initializer) error {
 	logger.Info("migration kit runtime loaded")
@@ -133,7 +153,92 @@ func InitModule(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runti
 		return err
 	}
 
+	if err := initializer.RegisterRpc(rpcInspect, func(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, payload string) (string, error) {
+		var req inspectRequest
+		if err := json.Unmarshal([]byte(payload), &req); err != nil {
+			return "", runtime.NewError("the payload is not an inspect request", 3)
+		}
+		if req.PlayerID == "" {
+			return "", runtime.NewError("player_id is required", 3)
+		}
+		resp, err := inspectPlayer(ctx, nk, req)
+		if err != nil {
+			return "", err
+		}
+		out, err := json.Marshal(resp)
+		if err != nil {
+			return "", err
+		}
+		return string(out), nil
+	}); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+// inspectPlayer reads back what this module wrote for a player: the documents and the checksums it
+// recorded beside them.
+func inspectPlayer(ctx context.Context, nk runtime.NakamaModule, req inspectRequest) (inspectResponse, error) {
+	resp := inspectResponse{PlayerID: req.PlayerID}
+
+	checksums := map[string]string{}
+	rows, err := listAll(ctx, nk, req.PlayerID, checksumCollection)
+	if err != nil {
+		return resp, err
+	}
+	for _, o := range rows {
+		var row struct {
+			Checksum   string `json:"checksum"`
+			Collection string `json:"collection"`
+			Key        string `json:"key"`
+		}
+		if json.Unmarshal([]byte(o.GetValue()), &row) != nil {
+			continue
+		}
+		checksums[row.Collection+"/"+row.Key] = row.Checksum
+	}
+
+	for _, collection := range req.Collections {
+		objects, err := listAll(ctx, nk, req.PlayerID, collection)
+		if err != nil {
+			return resp, err
+		}
+		for _, o := range objects {
+			name := collection + "/" + o.GetKey()
+			resp.Documents = append(resp.Documents, Document{
+				Collection: collection,
+				Key:        o.GetKey(),
+				Value:      o.GetValue(),
+				Checksum:   checksums[name],
+				Public:     o.GetPermissionRead() == 2,
+			})
+		}
+	}
+	sort.Slice(resp.Documents, func(i, j int) bool {
+		if resp.Documents[i].Collection != resp.Documents[j].Collection {
+			return resp.Documents[i].Collection < resp.Documents[j].Collection
+		}
+		return resp.Documents[i].Key < resp.Documents[j].Key
+	})
+	return resp, nil
+}
+
+// listAll reads a whole collection for a user, following Nakama's cursor.
+func listAll(ctx context.Context, nk runtime.NakamaModule, userID, collection string) ([]*api.StorageObject, error) {
+	var all []*api.StorageObject
+	cursor := ""
+	for {
+		objects, next, err := nk.StorageList(ctx, "", userID, collection, storagePage, cursor)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, objects...)
+		if next == "" {
+			return all, nil
+		}
+		cursor = next
+	}
 }
 
 // apply writes the documents whose meaning changed, and says which those were.

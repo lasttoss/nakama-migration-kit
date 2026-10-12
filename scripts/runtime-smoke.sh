@@ -14,6 +14,11 @@ PLUGINBUILDER=${PLUGINBUILDER:-heroiclabs/nakama-pluginbuilder:3.41.0}
 PG=mkit-smoke-pg; NK=mkit-smoke-nk; NET=mkit-smoke; PORT=${PORT:-17371}
 HTTP_KEY=${HTTP_KEY:-defaulthttpkey}; SERVER_KEY=${SERVER_KEY:-defaultkey}
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# `set -e` stops on a failure but says nothing about which one: a script that can stop silently is a
+# script whose next failure costs an afternoon. This names the command and the line. (It was added
+# after exactly that: `docker network create` on a network left behind by an earlier failed run
+# exited 1, and the only symptom was that the script printed nothing more.)
+trap 'echo "FAIL: line $LINENO: $BASH_COMMAND" >&2' ERR
 cleanup() { docker rm -f "$NK" "$PG" >/dev/null 2>&1 || true; docker network rm "$NET" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
@@ -22,11 +27,21 @@ docker run --rm -v "$PWD":/app -w /app --entrypoint sh "$PLUGINBUILDER" \
   -c "GOFLAGS=-mod=mod go build --trimpath --buildmode=plugin -o modules/backend.so ./cmd/server"
 [ -s modules/backend.so ] || fail "the plugin was not built"
 
+docker rm -f "$NK" "$PG" >/dev/null 2>&1 || true
+docker network rm "$NET" >/dev/null 2>&1 || true
 docker network create "$NET" >/dev/null
 docker run -d --name "$PG" --network "$NET" -e POSTGRES_PASSWORD=localdb -e POSTGRES_DB=nakama postgres:16-alpine >/dev/null
-until docker exec "$PG" pg_isready -U postgres >/dev/null 2>&1; do sleep 0.3; done
+# -h 127.0.0.1 forces a TCP check. Without it pg_isready answers over the unix socket, which during
+# initdb belongs to a temporary server that is not listening on TCP yet: the wait returns, the
+# migrate then fails with "connection refused", and the two lines look unrelated.
+until docker exec "$PG" pg_isready -h 127.0.0.1 -p 5432 -U postgres -d nakama >/dev/null 2>&1; do sleep 0.3; done
 # Without this the server dies on start with `relation "migration_info" does not exist`.
-docker run --rm --network "$NET" "$NAKAMA_IMAGE" migrate up --database.address postgres:localdb@"$PG":5432/nakama >/dev/null
+# The migrate output is kept on failure rather than discarded: a fatal here is the difference
+# between a lab that runs and a lab that reports "connection refused" with nothing else.
+if ! migrate_out=$(docker run --rm --network "$NET" "$NAKAMA_IMAGE" migrate up --database.address postgres:localdb@"$PG":5432/nakama 2>&1); then
+  printf '%s\n' "$migrate_out" >&2
+  fail "nakama migrate did not succeed"
+fi
 docker run -d --name "$NK" --network "$NET" -p "$PORT":7350 -v "$PWD/modules":/nakama/data/modules "$NAKAMA_IMAGE" \
   --name smoke --database.address postgres:localdb@"$PG":5432/nakama --session.token_expiry_sec 3600 >/dev/null
 for _ in $(seq 1 60); do curl -sf "http://127.0.0.1:$PORT/" >/dev/null 2>&1 && break; sleep 0.5; done
@@ -83,5 +98,18 @@ rows=$(docker exec "$PG" psql -U postgres -d nakama -tAc "select collection||'/'
 wallet/gold" ] || fail "the stored rows are not what the module reported: $rows"
 gold=$(docker exec "$PG" psql -U postgres -d nakama -tAc "select value->>'gold' from storage where collection='wallet'")
 [ "$gold" = "600" ] || fail "the wallet holds $gold, not the changed 600"
+
+echo "the target reads back what it holds"
+rpc migration.inspect "{\"player_id\":\"$U1\",\"collections\":[\"player_profile\",\"wallet\"]}" | tee /tmp/mkit-inspect.json
+python3 - <<'PY2' || fail "inspect does not agree with what was written"
+import json
+d = json.load(open("/tmp/mkit-inspect.json"))
+by = {x["collection"] + "/" + x["key"]: x for x in d["documents"]}
+assert set(by) == {"player_profile/level", "wallet/gold"}, f"wrong documents: {sorted(by)}"
+assert by["wallet/gold"]["checksum"] == "c2-CHANGED", f"wrong checksum: {by['wallet/gold']['checksum']}"
+assert json.loads(by["wallet/gold"]["value"])["gold"] == 600, f"wrong value: {by['wallet/gold']['value']}"
+assert by["player_profile/level"]["public"] is False and by["wallet/gold"]["public"] is True, "permissions are not what was asked for"
+print("inspect: 2 documents, the changed checksum, the changed value, the per-document permission")
+PY2
 
 echo "OK: one account, a second run that writes nothing, a dry run that writes nothing, one changed field written"
