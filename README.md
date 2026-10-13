@@ -8,6 +8,13 @@ make demo        # 10k players imported twice against a real Nakama, with a reco
 make demo-crash  # a run killed mid-batch, and the run that finishes it
 ```
 
+## The whole migration, in one command
+
+![make demo importing ten thousand players and then running again: the second run reports players identical 10000, documents written 0, and ends with "OK: 10000 players imported, a second run that wrote nothing, and a ledger that agrees with it"](docs/demo.gif)
+
+*`make demo`. The second run is not fast because it skipped the work - it did the same work with the writes withheld. The output is the command's; the pauses between lines are the recording's.*
+
+
 ## What it does, measured
 
 `make demo` starts a fake legacy title, a PostgreSQL and a Nakama, imports the title, imports it
