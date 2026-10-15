@@ -1,5 +1,7 @@
 # nakama-migration-kit
 
+[![ci](https://github.com/lasttoss/nakama-migration-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/lasttoss/nakama-migration-kit/actions/workflows/ci.yml)
+
 Move a live title's players off a legacy backend and into self-hosted Nakama, and be able to say with
 a number that the second run wrote nothing.
 
