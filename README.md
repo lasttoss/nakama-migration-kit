@@ -10,6 +10,11 @@ make demo        # 10k players imported twice against a real Nakama, with a reco
 make demo-crash  # a run killed mid-batch, and the run that finishes it
 ```
 
+**Where to look first:** [`internal/migrate/migrate.go`](internal/migrate/migrate.go) for the storage write
+that carries its own record, [`internal/checkpoint/checkpoint.go`](internal/checkpoint/checkpoint.go) for
+resuming a run that died, and [`internal/canon/canon.go`](internal/canon/canon.go) for comparing meaning
+instead of bytes. `make demo` runs the whole story.
+
 ## The whole migration, in one command
 
 ![make demo importing ten thousand players and then running again: the second run reports players identical 10000, documents written 0, and ends with "OK: 10000 players imported, a second run that wrote nothing, and a ledger that agrees with it"](docs/demo.gif)
